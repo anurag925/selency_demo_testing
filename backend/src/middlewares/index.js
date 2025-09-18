@@ -6,8 +6,10 @@ const { handleEmailVerificationToken } = require("./handle-email-verification-to
 const { handlePasswordSetupToken } = require("./handle-password-setup-token");
 const { checkApiAccess } = require("./check-api-access");
 const { isUserAdmin } = require("./is-user-admin");
+const { authenticateServiceToken } = require("./authenticate-service-token");
 
 module.exports = {
+    authenticateServiceToken,
     authenticateToken,
     csrfProtection,
     handleGlobalError,
