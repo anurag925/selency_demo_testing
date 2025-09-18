@@ -35,6 +35,7 @@ const handleUpdateStudent = asyncHandler(async (req, res) => {
 });
 
 const handleGetStudentDetail = asyncHandler(async (req, res) => {
+    console.log("Fetching student details for ID:", req.params.id);
     const studentId = req.params.id;
     const student = await getStudentDetail(studentId);
     

@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	_ "github.com/joho/godotenv/autoload"
 )
 
 // Student represents the student data structure
@@ -44,6 +47,7 @@ type APIResponse struct {
 }
 
 func main() {
+
 	// Get Node.js backend URL from environment variable or use default
 	nodeAPIURL := os.Getenv("NODE_API_URL")
 	if nodeAPIURL == "" {
@@ -69,19 +73,13 @@ func main() {
 // generateStudentReport handles the PDF generation request
 func generateStudentReport(w http.ResponseWriter, r *http.Request, nodeAPIURL string) {
 	// Extract student ID from URL path
-	path := r.URL.Path
-	// Extract ID from path like "/api/v1/students/2/report"
-	parts := strings.Split(path, "/")
-	if len(parts) < 6 || parts[5] == "" {
-		http.Error(w, "Student ID is required", http.StatusBadRequest)
-		return
-	}
-	id := parts[5]
+	id := r.PathValue("id")
 
 	// Fetch student data from Node.js API
 	student, err := fetchStudentData(nodeAPIURL, id)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to fetch student: %v", err), http.StatusInternalServerError)
+		slog.Error("Failed to fetch student", "error", err)
 		return
 	}
 
@@ -89,169 +87,112 @@ func generateStudentReport(w http.ResponseWriter, r *http.Request, nodeAPIURL st
 	pdfContent := generatePDFContent(student)
 
 	// Set response headers for PDF download
-	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"student_report_%s.pdf\"", id))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(pdfContent)))
 
-	// Write PDF content to response
-	_, err = w.Write([]byte(pdfContent))
-	if err != nil {
-		log.Printf("Error writing PDF to response: %v", err)
-	}
+	// // Write PDF content to response
+	// _, err = w.Write([]byte(pdfContent))
+	// if err != nil {
+	// 	log.Printf("Error writing PDF to response: %v", err)
+	// }
+	http.ServeContent(w, r, "", time.Now(), strings.NewReader(pdfContent))
 }
 
 // fetchStudentData fetches student data from Node.js backend
 func fetchStudentData(baseURL, id string) (*Student, error) {
-	url := fmt.Sprintf("%s/api/v1/students/%s", baseURL, id)
+	url := fmt.Sprintf("%s/api/v1/internals/students/%s", baseURL, id)
+	slog.Info("Fetching student data from", "url", url)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get(url)
+	// Create a new request
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Get tokens from environment variables
+	accessToken := os.Getenv("ACCESS_TOKEN")
+	csrfToken := os.Getenv("CSRF_TOKEN")
+	refreshToken := os.Getenv("REFRESH_TOKEN")
+	slog.Info("token", accessToken, csrfToken, refreshToken)
+
+	// Set cookies if tokens are available
+	if accessToken != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "accessToken",
+			Value: accessToken,
+		})
+	}
+
+	if csrfToken != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "csrfToken",
+			Value: csrfToken,
+		})
+	}
+
+	if refreshToken != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "refreshToken",
+			Value: refreshToken,
+		})
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request to Node.js API: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Node.js API returned status code: %d", resp.StatusCode)
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+	slog.Info("Response body", "body", string(body))
 
-	var apiResponse APIResponse
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("api returned status code: %d", resp.StatusCode)
+	}
+	var apiResponse Student
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 
-	return &apiResponse.Data, nil
+	return &apiResponse, nil
 }
 
 // generatePDFContent creates a basic PDF-like content using text formatting
 func generatePDFContent(student *Student) string {
 	var content strings.Builder
-
-	// PDF Header (simplified)
-	content.WriteString("%PDF-1.4\n")
-	content.WriteString("1 0 obj\n")
-	content.WriteString("<</Type /Catalog\n")
-	content.WriteString("/Pages 2 0 R>>\n")
-	content.WriteString("endobj\n")
-
-	// Pages object
-	content.WriteString("2 0 obj\n")
-	content.WriteString("<</Type /Pages\n")
-	content.WriteString("/Kids [3 0 R]\n")
-	content.WriteString("/Count 1>>\n")
-	content.WriteString("endobj\n")
-
-	// Page object
-	content.WriteString("3 0 obj\n")
-	content.WriteString("<</Type /Page\n")
-	content.WriteString("/Parent 2 0 R\n")
-	content.WriteString("/MediaBox [0 0 612 792]\n")
-	content.WriteString("/Contents 4 0 R\n")
-	content.WriteString("/Resources <<\n")
-	content.WriteString("/Font <<\n")
-	content.WriteString("/F1 5 0 R\n")
-	content.WriteString(">>\n")
-	content.WriteString(">>\n")
-	content.WriteString(">>\n")
-	content.WriteString("endobj\n")
-
-	// Content stream
-	content.WriteString("4 0 obj\n")
-	content.WriteString("<</Length 1000>>\n")
-	content.WriteString("stream\n")
-	content.WriteString("BT\n")
-	content.WriteString("/F1 12 Tf\n")
-	content.WriteString("72 720 Td\n")
-	content.WriteString("(STUDENT REPORT) Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("(Generated on: " + time.Now().Format("02-Jan-2006 15:04:05") + ") Tj\n")
-	content.WriteString("0 -30 Td\n")
-	content.WriteString("--------------------------------------------------- Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("(STUDENT INFORMATION) Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("ID: " + strconv.Itoa(student.ID) + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Name: " + student.Name + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Email: " + student.Email + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Phone: " + student.Phone + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Gender: " + student.Gender + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Date of Birth: " + formatDate(student.Dob) + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Class: " + student.Class + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Section: " + student.Section + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Roll Number: " + strconv.Itoa(student.Roll) + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("System Access: " + strconv.FormatBool(student.SystemAccess) + " Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("--------------------------------------------------- Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("(GUARDIAN INFORMATION) Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("Guardian Name: " + student.GuardianName + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Guardian Phone: " + student.GuardianPhone + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Relationship: " + student.RelationOfGuardian + " Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("--------------------------------------------------- Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("(ADDRESS INFORMATION) Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("Current Address: " + student.CurrentAddress + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Permanent Address: " + student.PermanentAddress + " Tj\n")
-	content.WriteString("0 -15 Td\n")
-	content.WriteString("Admission Date: " + formatDate(student.AdmissionDate) + " Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("--------------------------------------------------- Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("(REPORTED BY) Tj\n")
-	content.WriteString("0 -20 Td\n")
-	content.WriteString("Reporter Name: " + student.ReporterName + " Tj\n")
-	content.WriteString("ET\n")
-	content.WriteString("endstream\n")
-	content.WriteString("endobj\n")
-
-	// Font definition
-	content.WriteString("5 0 obj\n")
-	content.WriteString("<</Type /Font\n")
-	content.WriteString("/Subtype /Type1\n")
-	content.WriteString("/BaseFont /Helvetica\n")
-	content.WriteString(">>\n")
-	content.WriteString("endobj\n")
-
-	// Cross-reference table
-	content.WriteString("xref\n")
-	content.WriteString("0 6\n")
-	content.WriteString("0000000000 65535 f \n")
-	content.WriteString("0000000010 00000 n \n")
-	content.WriteString("0000000075 00000 n \n")
-	content.WriteString("0000000145 00000 n \n")
-	content.WriteString("0000000270 00000 n \n")
-	content.WriteString("0000000420 00000 n \n")
-	content.WriteString("trailer\n")
-	content.WriteString("<</Size 6\n")
-	content.WriteString("/Root 1 0 R\n")
-	content.WriteString(">>\n")
-	content.WriteString("startxref\n")
-	content.WriteString("480\n")
-	content.WriteString("%%EOF\n")
-
+	content.WriteString("STUDENT REPORT\n")
+	content.WriteString("Generated on: " + time.Now().Format("02-Jan-2006 15:04:05") + "\n")
+	content.WriteString("---------------------------------------------------\n")
+	content.WriteString("STUDENT INFORMATION\n")
+	content.WriteString("ID: " + strconv.Itoa(student.ID) + "\n")
+	content.WriteString("Name: " + student.Name + "\n")
+	content.WriteString("Email: " + student.Email + "\n")
+	content.WriteString("Phone: " + student.Phone + "\n")
+	content.WriteString("Class: " + student.Class + "\n")
+	content.WriteString("Section: " + student.Section + "\n")
+	content.WriteString("Roll Number: " + strconv.Itoa(student.Roll) + "\n")
+	content.WriteString("System Access: " + strconv.FormatBool(student.SystemAccess) + "\n")
+	content.WriteString("---------------------------------------------------\n")
+	content.WriteString("GUARDIAN INFORMATION\n")
+	content.WriteString("Guardian Name: " + student.GuardianName + "\n")
+	content.WriteString("Guardian Phone: " + student.GuardianPhone + "\n")
+	content.WriteString("Relationship: " + student.RelationOfGuardian + "\n")
+	content.WriteString("---------------------------------------------------\n")
+	content.WriteString("ADDRESS INFORMATION\n")
+	content.WriteString("Current Address: " + student.CurrentAddress + "\n")
+	content.WriteString("Permanent Address: " + student.PermanentAddress + "\n")
+	content.WriteString("Admission Date: " + formatDate(student.AdmissionDate) + "\n")
+	content.WriteString("---------------------------------------------------\n")
+	content.WriteString("REPORTED BY\n")
+	content.WriteString("Reporter Name: " + student.ReporterName + "\n")
 	return content.String()
 }
 
